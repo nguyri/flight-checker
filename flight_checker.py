@@ -6,6 +6,7 @@ import re
 import time
 import pdfplumber
 import requests
+from pathlib import Path
 from dotenv import load_dotenv
 
 # Import our custom Stage 2 optimization algorithm
@@ -29,6 +30,7 @@ logger.setLevel(logging.DEBUG if VERBOSE_LOGGING else logging.INFO)
 RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY")
 INPUT_PDF = os.environ.get("INPUT_PDF", "flights-1.pdf")
 OUTPUT_CSV = os.environ.get("OUTPUT_CSV", "flights_output.csv")
+PARSE_CSV = os.environ.get("PARSE_CSV", "parse_output.csv")
 CACHE_FILE = "flight_cache.json"
 ARRIVAL_IATA_CODE = os.environ.get("ARRIVAL_IATA_CODE", "YYC")
 MANIFEST_DATE = None
@@ -341,6 +343,29 @@ def verify_pipeline_integrity(extracted_rows_count, output_csv_path):
     except Exception as e:
         logger.error(f"Could not complete integrity check: {e}")
         return False
+    
+def save_pipeline_to_csv(compiled_rows, output_csv_path):
+    """Stage 2: Commits compiled data row arrays safely to disk as a CSV file."""
+    if not compiled_rows:
+        logger.error("CSV Output Stage aborted: No data rows found to write.")
+        return False
+
+    logger.info(f"Starting Stage 2: Exporting {len(compiled_rows) - 1} records to {output_csv_path}...")
+    
+    try:
+        # Path normalization ensures directories exist if using nested folders
+        csv_file = Path(output_csv_path)
+        csv_file.parent.mkdir(parents=True, exist_ok=True)
+
+        with csv_file.open(mode="w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerows(compiled_rows)
+            
+        logger.info(f"✅ CSV Output Stage Complete! File saved successfully.")
+        return True
+        
+    except IOError as e:
+        logger.error(f"❌ Storage write failure on {output_csv_path}: {e}")
+        return False
 # ----------------------------------------------------------------
 # EXECUTION STAGES
 # ----------------------------------------------------------------
@@ -378,6 +403,7 @@ def run_extraction_pipeline():
                         row_pickup_idx = original_pickup_idx + 4 if (original_pickup_idx and original_pickup_idx > flt_info_idx) else original_pickup_idx
                         pickup_val = row[row_pickup_idx] if row_pickup_idx is not None else ""
                         
+                        # 1. Fetch data (could return "INVALID\nDESTINATION")
                         status, origin, arr_time = get_flight_live_data(flight_code, pickup_val)
                         
                         row.insert(flt_info_idx + 1, flight_code)
@@ -387,8 +413,16 @@ def run_extraction_pipeline():
                         
                         if row_pickup_idx is not None:
                             row_pickup_idx = original_pickup_idx + 4 if original_pickup_idx > flt_info_idx else original_pickup_idx
-                            wait_time_val = calculate_wait_time(arr_time, row[row_pickup_idx])
+                            
+                            # 2. CRASH PROTECTION: Guard math calculation against invalid string tokens
+                            if "INVALID" in str(arr_time) or status == "Mismatch":
+                                wait_time_val = "N/A"
+                            else:
+                                wait_time_val = calculate_wait_time(arr_time, row[row_pickup_idx])
+                                
                             row.insert(row_pickup_idx + 1, wait_time_val)
+                    
+                    # This now appends safely even if the API returned an error string!
                     all_rows.append(row)
                     
         return all_rows
@@ -420,22 +454,29 @@ def run_optimization_pipeline(processed_rows):
     final_output_rows = [header]
     
     for group_id, group_meta in enumerate(groups, start=1):
-        dispatch_str = group_meta["dispatch_time"].strftime("%Y-%m-%d %H:%M")
+        # Gracefully assign names based on whether the data is valid or unassigned
+        if group_meta.get("is_valid", True):
+            group_name = f"Group #{group_id}"
+            dispatch_str = group_meta["dispatch_time"].strftime("%Y-%m-%d %H:%M")
+        else:
+            group_name = "MANUAL REVIEW"
+            dispatch_str = "N/A - Review Flight"
+
         for row in group_meta["flights"]:
-            row.insert(0, f"Group #{group_id}")
+            row.insert(0, group_name)
             row.insert(1, dispatch_str)
             final_output_rows.append(row)
-            
-    with open(OUTPUT_CSV, mode="w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerows(final_output_rows)
-    print(f"Success! Consolidated manifest file updated: {OUTPUT_CSV}")
+    return final_output_rows
 
 # ----------------------------------------------------------------
 # SYSTEM ENTRY LEVEL CONTROLLER
 # ----------------------------------------------------------------
 if __name__ == "__main__":
     extracted_data = run_extraction_pipeline()
-    verify_pipeline_integrity(len(extracted_data), OUTPUT_CSV)
+    
+    save_pipeline_to_csv(extracted_data, PARSE_CSV)
+    verify_pipeline_integrity(len(extracted_data), PARSE_CSV)
     if extracted_data:
-        run_optimization_pipeline(extracted_data)
+        optimized_data = run_optimization_pipeline(extracted_data)
+    save_pipeline_to_csv(optimized_data, OUTPUT_CSV)
+    verify_pipeline_integrity(len(extracted_data), OUTPUT_CSV)

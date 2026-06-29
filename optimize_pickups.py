@@ -20,15 +20,20 @@ def parse_flight_time(time_str):
 def build_pickup_groups(processed_rows, arrival_index, max_wait_hours=2):
     """
     Groups flights together ensuring no passenger waits longer than max_wait_hours.
+    Unparseable or mismatch rows are held and routed to a dedicated fallback group.
     """
-    # Extract data rows and sort them by parsed arrival datetime
     valid_data_rows = []
+    unassigned_rows = [] # Hold skipped rows here to protect line integrity
+    
+    # 1. Sort rows into parseable vs unparseable groups
     for row in processed_rows:
         arr_dt = parse_flight_time(row[arrival_index])
         if arr_dt:
             valid_data_rows.append((arr_dt, row))
+        else:
+            unassigned_rows.append(row)
     
-    # Sort chronologically by arrival time
+    # Sort parseable items chronologically by arrival time
     valid_data_rows.sort(key=lambda x: x[0])
     
     optimized_groups = []
@@ -36,30 +41,37 @@ def build_pickup_groups(processed_rows, arrival_index, max_wait_hours=2):
     group_anchor_time = None
     max_wait_delta = timedelta(hours=max_wait_hours)
     
+    # 2. Run your time-windowing assignment algorithm
     for arr_dt, row in valid_data_rows:
-        # If no group is open, start a new one anchored by this flight
         if not current_group:
             current_group = [row]
             group_anchor_time = arr_dt
             continue
             
-        # Check if adding this flight violates the 2-hour wait limit for the first person
         if arr_dt - group_anchor_time <= max_wait_delta:
             current_group.append(row)
         else:
-            # Close current group, save it, and open a new group for this flight
             optimized_groups.append({
-                "dispatch_time": group_anchor_time + max_wait_delta, # Optional vehicle target departure
-                "flights": current_group
+                "dispatch_time": group_anchor_time + max_wait_delta,
+                "flights": current_group,
+                "is_valid": True
             })
             current_group = [row]
             group_anchor_time = arr_dt
             
-    # Catch the final lingering group
     if current_group:
         optimized_groups.append({
             "dispatch_time": group_anchor_time + max_wait_delta,
-            "flights": current_group
+            "flights": current_group,
+            "is_valid": True
+        })
+        
+    # 3. LINE PROTECTION SAFETY NET: If any rows were unparseable, append them now!
+    if unassigned_rows:
+        optimized_groups.append({
+            "dispatch_time": None, # Flag as N/A or Manual inside your loop
+            "flights": unassigned_rows,
+            "is_valid": False
         })
         
     return optimized_groups
@@ -82,10 +94,16 @@ def export_grouped_manifest(all_processed_rows, arrival_idx, final_csv_path):
     final_output_rows = [header]
     
     for group_id, group_meta in enumerate(groups, start=1):
-        dispatch_str = group_meta["dispatch_time"].strftime("%Y-%m-%d %H:%M")
+        # Gracefully assign names based on whether the data is valid or unassigned
+        if group_meta.get("is_valid", True):
+            group_name = f"Group #{group_id}"
+            dispatch_str = group_meta["dispatch_time"].strftime("%Y-%m-%d %H:%M")
+        else:
+            group_name = "MANUAL REVIEW"
+            dispatch_str = "N/A - Review Flight"
+
         for row in group_meta["flights"]:
-            # Inject grouping info to the front of every row
-            row.insert(0, f"Group #{group_id}")
+            row.insert(0, group_name)
             row.insert(1, dispatch_str)
             final_output_rows.append(row)
             
