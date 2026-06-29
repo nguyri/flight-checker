@@ -1,32 +1,65 @@
 import csv
+import json
+import logging
+import os
 import re
 import time
 import pdfplumber
 import requests
-import os
-from datetime import datetime
 from dotenv import load_dotenv
-from optimize_pickups import build_pickup_groups, parse_flight_time
-from cache import load_cache, save_cache
+
+# Import our custom Stage 2 optimization algorithm
+from optimize_pickups import build_pickup_groups
+from cache import load_cache, save_cache, generate_shuttle_cache_key
 
 # ----------------------------------------------------------------
-# CONFIGURATION:
+# INITIALIZATION & LOGGING SETUP
 # ----------------------------------------------------------------
-
 load_dotenv()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Mute noisy font warnings from the PDF parser
+logging.getLogger("pdfminer").setLevel(logging.ERROR)
+
+# Dynamically adjust the log level based on environment settings
+VERBOSE_LOGGING = os.environ.get("VERBOSE_LOGGING", "True").lower() in ("true", "1", "yes")
+logger.setLevel(logging.DEBUG if VERBOSE_LOGGING else logging.INFO)
 
 RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY")
 INPUT_PDF = os.environ.get("INPUT_PDF", "flights-1.pdf")
 OUTPUT_CSV = os.environ.get("OUTPUT_CSV", "flights_output.csv")
+CACHE_FILE = "flight_cache.json"
+ARRIVAL_IATA_CODE = os.environ.get("ARRIVAL_IATA_CODE", "YYC")
+MANIFEST_DATE = None
+USE_CACHE = True
 
 if not RAPIDAPI_KEY:
-    raise ValueError("CRITICAL ERROR: RAPIDAPI_KEY is missing from the environment variables!")
+    raise ValueError("CRITICAL ERROR: RAPIDAPI_KEY is missing from environment variables!")
 
 
 # ----------------------------------------------------------------
-# STEP 1: Extract Flight Codes from PDF
+# DATA FORMATTING & PARSING HELPERS
 # ----------------------------------------------------------------
+def normalize_date_for_api(raw_date_str):
+    """Ensures whatever date string we found matches the YYYY-MM-DD required by AeroDataBox."""
+    if not raw_date_str:
+        return ""
+    
+    cleaned = str(raw_date_str).strip().replace("/", "-")
+    
+    # If the date is already in standard YYYY-MM-DD, return it
+    if re.match(r'^\d{4}-\d{2}-\d{2}$', cleaned):
+        return cleaned
+        
+    # If the date is MM-DD (e.g. 06-29), automatically match it against the operational year 2026
+    if re.match(r'^\d{2}-\d{2}$', cleaned):
+        return f"2026-{cleaned}"
+        
+    return cleaned
+
 def extract_full_flight_code(cell_text):
+    """Parses raw text cells to isolate standard flight numbers."""
     if not cell_text:
         return ""
     match_chinese = re.search(r'航班号:\s*([A-Za-z0-9]+)', str(cell_text))
@@ -37,257 +70,355 @@ def extract_full_flight_code(cell_text):
         return match_standard.group(1).upper()
     return ""
 
-# ----------------------------------------------------------------
-# STEP 2: Fetch Live Status & Arrival Time from API
-# ----------------------------------------------------------------
-def get_flight_live_data(flight_number):
-    if not flight_number:
-        return "N/A", "N/A", "N/A"
-
-    # 1. Load your local persistent cache
-    flight_cache = load_cache()
-
-    # 2. Check if we already have this flight stored locally
-    if flight_number in flight_cache:
-        print(f"-> [CACHE HIT] Loading data for {flight_number} from local cache.")
-        cached_data = flight_cache[flight_number]
-        return cached_data["status"], cached_data["origin"], cached_data["sched_arr"]
-
-    # 3. Cache Miss: We need to hit the real AeroDataBox API
-    print(f"-> [CACHE MISS] Fetching fresh data from API for {flight_number}...")
-    url = f"https://aerodatabox.p.rapidapi.com/flights/number/{flight_number}"
-    headers = {
-        "X-RapidAPI-Key": RAPIDAPI_KEY,
-        "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com"
-    }
-    
-    try:
-        time.sleep(1) # Cushion API rate limits
-        response = requests.get(url, headers=headers)
-        
-        if response.status_code == 204:
-            status, origin, sched_arr = "No data found", "N/A", "N/A"
-        elif response.status_code != 200:
-            return f"API Error ({response.status_code})", "N/A", "N/A"
-        else:
-            data = response.json()
-            if isinstance(data, list) and len(data) > 0:
-                latest_flight = data[0]
-                status = latest_flight.get("status", "Unknown")
-                
-                departure = latest_flight.get("departure", {})
-                origin = departure.get("airport", {}).get("name", "Unknown").replace(" ", "\n")
-                
-                arrival = latest_flight.get("arrival", {})
-                plain_sched_arr = arrival.get("scheduledTime", {}).get("local", "N/A")
-                sched_arr = format_timezone_offset(plain_sched_arr).replace(" ", "\n")
-            else:
-                status, origin, sched_arr = "No Data", "N/A", "N/A"
-                
-        # 4. Save the successful result to our cache dictionary so we have it next time
-        flight_cache[flight_number] = {
-            "status": status,
-            "origin": origin,
-            "sched_arr": sched_arr,
-            "timestamp": time.time() # Optional tracking metric
-        }
-        save_cache(flight_cache)
-        
-        return status, origin, sched_arr
-            
-    except Exception as e:
-        return f"Fetch Error: {str(e)}", "N/A", "N/A"
-
 def format_timezone_offset(time_str):
+    """Maps ISO timezone offsets (+00:00, -06:00) to clear text acronyms."""
     if not time_str or time_str == "N/A":
         return "N/A"
         
     cleaned = time_str.split(".")[0].replace("T", " ")
-    
     tz_mapping = {
-        "-04:00": "EDT",
-        "-05:00": "EST/CDT",
-        "-06:00": "MDT/CST", 
-        "-07:00": "MST/PDT",
-        "-08:00": "PST",
-        "Z": "UTC",
-        "+00:00": "UTC"
+        "-04:00": "EDT", "-05:00": "EST/CDT", "-06:00": "MDT/CST",
+        "-07:00": "MST/PDT", "-08:00": "PST", "Z": "UTC", "+00:00": "UTC"
     }
     
     for offset, abbreviation in tz_mapping.items():
         if offset in cleaned:
             return cleaned.replace(offset, f" {abbreviation}")
-            
     return cleaned[:16]
 
-# ----------------------------------------------------------------
-# HELPER: Calculate time delta between Arrival and Pick-up time
-# ----------------------------------------------------------------
+def find_manifest_date(data_rows, flt_info_idx):
+    """Scans the data rows to extract the manifest date ONCE."""
+    global MANIFEST_DATE
+    
+    for row in data_rows:
+        if len(row) <= flt_info_idx or not row[flt_info_idx]:
+            continue
+            
+        text_str = str(row[flt_info_idx]).strip()
+        
+        # Look for standard YYYY-MM-DD or MM-DD patterns
+        date_match = re.search(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2})', text_str)
+        if date_match:
+            MANIFEST_DATE = date_match.group(1).replace("/", "-")
+            logger.info(f"[DATE DETECTED] Locked target manifest date: {MANIFEST_DATE}")
+            return
+            
+        # Fallback for word-based months like '29-Jun'
+        text_month_match = re.search(r'\d{1,2}[-\s][A-Za-z]{3}', text_str)
+        if text_month_match:
+            MANIFEST_DATE = text_month_match.group(0)
+            logger.info(f"[DATE DETECTED] Locked target manifest date: {MANIFEST_DATE}")
+            return
+            
+    logger.warning("[DATE WARNING] No operational date found in 'FLT Info'. Falling back to general tracking.")
+
 def calculate_wait_time(arrival_text, pickup_text):
-    """
-    Parses timestamps and returns the difference (Wait Time) in minutes.
-    Formated as 'X min'.
-    """
+    """Computes delta duration (OP pickup time minus Arrival time) in minutes."""
     if not arrival_text or not pickup_text or "N/A" in arrival_text:
         return "N/A"
-    
     try:
-        # Extract HH:MM from the Arrival text (ignoring newlines and timezone suffixes)
-        # Matches format like 11:36
-        arr_time_match = re.search(r'(\d{1,2}):(\d{2})', arrival_text)
-        pUp_time_match = re.search(r'(\d{1,2}):(\d{2})', pickup_text)
+        arr_match = re.search(r'(\d{1,2}):(\d{2})', arrival_text)
+        p_match = re.search(r'(\d{1,2}):(\d{2})', pickup_text)
         
-        if arr_time_match and pUp_time_match:
-            arr_hours, arr_mins = map(int, arr_time_match.groups())
-            pUp_hours, pUp_mins = map(int, pUp_time_match.groups())
+        if arr_match and p_match:
+            arr_mins = (int(arr_match.group(1)) * 60) + int(arr_match.group(2))
+            p_mins = (int(p_match.group(1)) * 60) + int(p_match.group(2))
             
-            # Convert both to absolute minutes from start of day
-            total_arrival_minutes = (arr_hours * 60) + arr_mins
-            total_pickup_minutes = (pUp_hours * 60) + pUp_mins
-            
-            # OP pickup time minus arrival time
-            delta_minutes = total_pickup_minutes - total_arrival_minutes
-            
-            # Handle possible overnight wraps gracefully
-            if delta_minutes < -600: 
+            delta_minutes = p_mins - arr_mins
+            if delta_minutes < -600:  # Overnight wrap correction
                 delta_minutes += 1440
-                
             return f"{delta_minutes} min"
     except Exception:
         pass
-        
     return "N/A"
 
 # ----------------------------------------------------------------
-# STEP 3: Core Pipeline Execution
+# API CORE & INTELLIGENT SHUTTLE MATCHING
 # ----------------------------------------------------------------
-def run_extraction_pipeline():
-    print(f"Opening {INPUT_PDF}...")
-    all_rows = []
+def pick_best_shuttle_leg(api_data_list, pdf_pickup_time_str):
+    """
+    Evaluates multi-leg raw payloads to isolate the leg arriving closest 
+    to the target manifest pickup window.
+    """
+    if not api_data_list:
+        return None
+    if len(api_data_list) == 1:
+        return api_data_list[0]
+        
+    p_match = re.search(r'(\d{1,2}):(\d{2})', str(pdf_pickup_time_str))
+    if not p_match:
+        return api_data_list[0]
+        
+    pdf_pickup_minutes = (int(p_match.group(1)) * 60) + int(p_match.group(2))
+    best_match_leg = api_data_list[0]
+    min_delta = float('inf')
     
+    for leg in api_data_list:
+        arrival_node = leg.get("arrival", {})
+        arrival_local = arrival_node.get("scheduledTime", {}).get("local", "")
+        dest_airport = arrival_node.get("airport", {}).get("iata", "UNK")
+        
+        # Matches times out of both standard spaces and 'T' delimiters (e.g., '2026-06-29 12:30-06:00')
+        arr_match = re.search(r'[\sT](\d{2}):(\d{2})', arrival_local)
+        
+        if arr_match:
+            api_arr_minutes = (int(arr_match.group(1)) * 60) + int(arr_match.group(2))
+            delta = abs(pdf_pickup_minutes - api_arr_minutes)
+            
+            logger.info(f"[PROXIMITY EVAL] Destination: {dest_airport} | Arrives: {arr_match.group(1)}:{arr_match.group(2)} | Delta: {delta} mins")
+            
+            if delta < min_delta:
+                min_delta = delta
+                best_match_leg = leg
+                
+    logger.info(f"[MATCH LOCKED] Winner Destination: {best_match_leg.get('arrival', {}).get('airport', {}).get('iata')} landing at local time: {best_match_leg.get('arrival', {}).get('scheduledTime', {}).get('local')}")
+    return best_match_leg
+
+def fetch_live_flight_payload(flight_number):
+    """Executes network requests routed completely through the api.market gateway structure."""
+    logger.info(f"[API ROUTE] Querying api.market for flight: {flight_number}")
+    
+    time.sleep(1.5)
+    url = f"https://prod.api.market/api/v1/aedbx/aerodatabox/flights/number/{flight_number}/{MANIFEST_DATE}"
+    
+    headers = {
+        "x-api-market-key": RAPIDAPI_KEY
+    }
+    
+    response = requests.get(url, headers=headers)
+    if response.status_code == 204:
+        return []
+        
+    response.raise_for_status()
+    return response.json()
+#rapid-api
+# def fetch_live_flight_payload(flight_number):
+#     """Executes network requests against the date-specific AeroDataBox API endpoint."""
+#     global MANIFEST_DATE
+#     target_date = normalize_date_for_api(MANIFEST_DATE)
+    
+#     headers = {"X-RapidAPI-Key": RAPIDAPI_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com"}
+    
+#     if target_date:
+#         logger.info(f"[API ROUTE] Fetching {flight_number} specifically for date: {target_date}")
+#         url = f"https://aerodatabox.p.rapidapi.com/flights/number/{flight_number}/{target_date}"
+#     else:
+#         logger.warning("[API ROUTE FALLBACK] No manifest date locked. Falling back to general flight loop.")
+#         url = f"https://aerodatabox.p.rapidapi.com/flights/number/{flight_number}"
+    
+#     time.sleep(1)  # API Rate cushion
+#     response = requests.get(url, headers=headers)
+#     if response.status_code == 204:
+#         return []
+#     response.raise_for_status()
+#     return response.json()
+
+def get_flight_live_data(flight_number, pdf_pickup_time_str):
+    if not flight_number:
+        return "N/A", "N/A", "N/A"
+
+    if USE_CACHE:
+        flight_cache = load_cache(CACHE_FILE)
+        cache_key = generate_shuttle_cache_key(flight_number, pdf_pickup_time_str, MANIFEST_DATE)
+        if cache_key in flight_cache:
+            cached = flight_cache[cache_key]
+            return cached["status"], cached["origin"], cached["sched_arr"]
+
+    try:
+        api_data = fetch_live_flight_payload(flight_number)
+        if not api_data:
+            return "No data found", "N/A", "N/A"
+
+        # 1. Standardize the incoming API data array
+        raw_legs = api_data if isinstance(api_data, list) else api_data.get("legs", [api_data])
+
+        # 2. Filter down to legs matching your target destination (e.g., "Calgary" or "YYC")
+        destination_matched_legs = []
+        for leg in raw_legs:
+            arrival_node = leg.get("arrival", {})
+            dest_airport_name = arrival_node.get("airport", {}).get("name", "").upper()
+            dest_airport_iata = arrival_node.get("airport", {}).get("iata", "").upper()
+            dest_municipality = arrival_node.get("airport", {}).get("municipalityName", "").upper()
+
+            if (ARRIVAL_IATA_CODE in dest_airport_name or 
+                ARRIVAL_IATA_CODE in dest_airport_iata or 
+                ARRIVAL_IATA_CODE in dest_municipality):
+                destination_matched_legs.append(leg)
+
+        # 3. SOFT ENFORCEMENT: Populate the row, but override variables if the city doesn't match
+        if not destination_matched_legs:
+            logger.warning(f"[ROUTE REJECTED] Flight {flight_number} lands in {raw_legs[0].get('arrival', {}).get('airport', {}).get('iata', 'UNK')} instead of {ARRIVAL_IATA_CODE}.")
+            
+            bad_leg = raw_legs[0]
+            status = "Mismatch"
+            origin = bad_leg.get("departure", {}).get("airport", {}).get("name", "Unknown").replace(" ", "\n")
+            sched_arr = "INVALID\nDESTINATION"
+            
+            if USE_CACHE:
+                flight_cache[cache_key] = {"status": status, "origin": origin, "sched_arr": sched_arr}
+                save_cache(flight_cache, CACHE_FILE)
+                
+            return status, origin, sched_arr
+
+        # 4. Route successfully filtered legs to your proximity scorer
+        if len(destination_matched_legs) > 1:
+            logger.info(f"[CONNECTING ROUTE] Found {len(destination_matched_legs)} target legs. Scoring proximity...")
+            target_leg = pick_best_shuttle_leg(destination_matched_legs, pdf_pickup_time_str)
+        else:
+            target_leg = destination_matched_legs[0]
+
+        # 5. EXTRACT AND RETURN VALUES (Ensure this block wasn't deleted!)
+        status = target_leg.get("status", "Unknown")
+        origin = target_leg.get("departure", {}).get("airport", {}).get("name", "Unknown").replace(" ", "\n")
+        plain_sched_arr = target_leg.get("arrival", {}).get("scheduledTime", {}).get("local", "N/A")
+        sched_arr = format_timezone_offset(plain_sched_arr).replace(" ", "\n")
+
+        if USE_CACHE:
+            flight_cache[cache_key] = {"status": status, "origin": origin, "sched_arr": sched_arr}
+            save_cache(flight_cache, CACHE_FILE)
+        
+        return status, origin, sched_arr
+
+    except Exception as e:
+        logger.error(f"[FETCH FAILED] -> Error parsing flight {flight_number}: {e}")
+        return f"Fetch Error: {str(e)}", "N/A", "N/A"    
+# ----------------------------------------------------------------
+# INDEX IDENTIFICATION & SCHEMA SETUP
+# ----------------------------------------------------------------
+def identify_column_indices(header_row):
+    """Locates original structural indexes while cleaning newline text artifacts."""
     flt_info_index = None
     original_pickup_index = None
+    
+    for i, h in enumerate(header_row):
+        if not h: continue
+        clean_header = re.sub(r'[\s\-]', '', str(h)).upper()
+        if "FLTINFO" in clean_header:
+            flt_info_index = i
+        if any(x in clean_header for x in ["PICKTIME", "PICKUP"]):
+            original_pickup_index = i
+            
+    return flt_info_index, original_pickup_index
+
+def inject_api_headers(header_row, flt_info_idx, original_pickup_idx):
+    """Mutates structural headers to include newly integrated API metrics."""
+    if original_pickup_idx is not None:
+        header_row[original_pickup_idx] = "OP pickup time"
+        
+    header_row.insert(flt_info_idx + 1, "Flight Code")
+    header_row.insert(flt_info_idx + 2, "Arrival")
+    header_row.insert(flt_info_idx + 3, "Status")
+    header_row.insert(flt_info_idx + 4, "Origin Airport")
+    
+    current_pickup_idx = original_pickup_idx + 4 if original_pickup_idx > flt_info_idx else original_pickup_idx
+    if current_pickup_idx is not None:
+        header_row.insert(current_pickup_idx + 1, "Wait time")
+        
+    return header_row
+
+def verify_pipeline_integrity(extracted_rows_count, output_csv_path):
+    """
+    Compares total structured rows extracted from the source document 
+    against actual logical rows saved in the final CSV output.
+    """
+    try:
+        with open(output_csv_path, mode="r", encoding="utf-8", newline="") as f:
+            # Use csv.reader so cells with internal \n are not counted as new lines
+            reader = csv.reader(f)
+            
+            # Counts include the header
+            csv_row_count = sum(1 for row in reader) 
+            
+        logger.info(f"[INTEGRITY CHECK] Source Records: {extracted_rows_count} | Destination CSV Rows: {csv_row_count}")
+        
+        if extracted_rows_count == csv_row_count:
+            logger.info("✅ Integrity Check Passed: All records safely accounted for.")
+            return True
+        else:
+            logger.error(f"❌ CRITICAL MISMATCH: Data variance detected! Source records: {extracted_rows_count}, CSV rows: {csv_row_count}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Could not complete integrity check: {e}")
+        return False
+# ----------------------------------------------------------------
+# EXECUTION STAGES
+# ----------------------------------------------------------------
+def run_extraction_pipeline():
+    print(f"Starting Stage 1: Parsing PDF data from {INPUT_PDF}...")
+    all_rows = []
+    flt_info_idx, original_pickup_idx = None, None
     
     try:
         with pdfplumber.open(INPUT_PDF) as pdf:
             for page_num, page in enumerate(pdf.pages):
                 table = page.extract_table()
-                if not table:
-                    continue
+                if not table: continue
                 
                 if page_num == 0:
                     header = table[0]
-                    
-                    try:
-                        # Normalize headers by converting to uppercase and stripping ALL spaces/newlines
-                        # This turns "Pick\nTime", "Pick Time", or "pick-time" into "PICKTIME"
-                        flt_info_index = next(
-                            i for i, h in enumerate(header) 
-                            if h and "FLTINFO" in re.sub(r'[\s\-]', '', str(h)).upper()
-                        )
-                    except StopIteration:
+                    flt_info_idx, original_pickup_idx = identify_column_indices(header)
+                    if flt_info_idx is None:
                         print("Error: Could not find 'FLT Info' column.")
-                        return
+                        return []
                         
-                    try:
-                        # This will now successfully match "Pick\nTime", "Pick Time", "Pick-up Time", etc.
-                        original_pickup_index = next(
-                            i for i, h in enumerate(header) 
-                            if h and any(x in re.sub(r'[\s\-]', '', str(h)).upper() for x in ["PICKTIME", "PICKUP"])
-                        )
-                        # Clean up the label entirely in the final output CSV
-                        header[original_pickup_index] = "OP\npick\ntime"
-                    except StopIteration:
-                        print("Warning: Could not find a 'Pick Time' column to rename.")
-
-                    # 2. Add API columns immediately next to FLT INFO
-                    header.insert(flt_info_index + 1, "Flight Code")
-                    header.insert(flt_info_index + 2, "Arrival")
-                    header.insert(flt_info_index + 3, "Status")
-                    header.insert(flt_info_index + 4, "Origin Airport")
-                    
-                    # Adjust pickup index position if it sat to the right of FLT INFO
-                    if original_pickup_index is not None and original_pickup_index > flt_info_index:
-                        current_pickup_index = original_pickup_index + 4
-                    else:
-                        current_pickup_index = original_pickup_index
-                        
-                    # 3. Add the Wait Time column header directly after OP pickup time
-                    if current_pickup_index is not None:
-                        header.insert(current_pickup_index + 1, "Wait time")
-                        
+                    header = inject_api_headers(header, flt_info_idx, original_pickup_idx)
                     all_rows.append(header)
                     data_rows = table[1:]
+                
+                    find_manifest_date(data_rows, flt_info_idx)
                 else:
                     data_rows = table
 
+                # Streamlined processing loop
                 for row in data_rows:
-                    if flt_info_index is not None and len(row) > flt_info_index:
-                        flt_info_data = row[flt_info_index]
-                        flight_code = extract_full_flight_code(flt_info_data)
+                    if len(row) > flt_info_idx:
+                        flight_code = extract_full_flight_code(row[flt_info_idx])
                         
-                        print(f"Checking API for Flight: {flight_code if flight_code else 'Empty Row'}...")
-                        status, origin, arr_time = get_flight_live_data(flight_code)
+                        row_pickup_idx = original_pickup_idx + 4 if (original_pickup_idx and original_pickup_idx > flt_info_idx) else original_pickup_idx
+                        pickup_val = row[row_pickup_idx] if row_pickup_idx is not None else ""
                         
-                        # Sequential insertions for flight info
-                        row.insert(flt_info_index + 1, flight_code)
-                        row.insert(flt_info_index + 2, arr_time)   
-                        row.insert(flt_info_index + 3, status)
-                        row.insert(flt_info_index + 4, origin)
+                        status, origin, arr_time = get_flight_live_data(flight_code, pickup_val)
                         
-                        # Recalculate where pickup data lives now after insertions
-                        if original_pickup_index is not None and original_pickup_index > flt_info_index:
-                            row_pickup_index = original_pickup_index + 4
-                        else:
-                            row_pickup_index = original_pickup_index
-                            
-                        # Calculate and inject wait time
-                        if row_pickup_index is not None and len(row) > row_pickup_index:
-                            pickup_val = row[row_pickup_index]
-                            wait_time_val = calculate_wait_time(arr_time, pickup_val)
-                            row.insert(row_pickup_index + 1, wait_time_val)
-                    
+                        row.insert(flt_info_idx + 1, flight_code)
+                        row.insert(flt_info_idx + 2, arr_time)   
+                        row.insert(flt_info_idx + 3, status)
+                        row.insert(flt_info_idx + 4, origin)
+                        
+                        if row_pickup_idx is not None:
+                            row_pickup_idx = original_pickup_idx + 4 if original_pickup_idx > flt_info_idx else original_pickup_idx
+                            wait_time_val = calculate_wait_time(arr_time, row[row_pickup_idx])
+                            row.insert(row_pickup_idx + 1, wait_time_val)
                     all_rows.append(row)
-
-            # Save data to CSV
-            if all_rows:
-                with open(OUTPUT_CSV, mode="w", newline="", encoding="utf-8") as f:
-                    writer = csv.writer(f)
-                    writer.writerows(all_rows)
-                print(f"\nPipeline complete! Streamlined results saved to: {OUTPUT_CSV}")
-                return all_rows
-            else:
-                print("No data processed.")
-                return []
-
-    except FileNotFoundError:
-        print(f"Error: PDF '{INPUT_PDF}' not found.")
+                    
+        return all_rows
+    except Exception as e:
+        logger.error(f"Pipeline failure: {e}")
+        return []
 
 def run_optimization_pipeline(processed_rows):
+    """STAGE 2: Evaluates windowing constraints and exports grouped manifest."""
     if not processed_rows or len(processed_rows) <= 1:
-        print("No rows to optimize.")
+        print("No active datasets passed down to run optimization groupings.")
         return
         
+    print("\nStarting Stage 2: Grouping passenger schedules...")
     header = processed_rows[0]
     data_rows = processed_rows[1:]
     
-    # 1. Dynamically locate where the 'Arrival' data index is
     try:
         arrival_idx = next(i for i, h in enumerate(header) if h and "ARRIVAL" in str(h).upper())
     except StopIteration:
-        print("Error: Could not find 'Arrival' column for time math.")
+        print("Structural Mapping Error: Missing active 'Arrival' field definitions.")
         return
 
-    # 2. Run your grouping logic (from the previous response)
+    # Call out to the algorithm engine file
     groups = build_pickup_groups(data_rows, arrival_idx, max_wait_hours=2)
     
-    # 3. Add Tracking Columns to the CSV header
     header.insert(0, "Pickup Group ID")
     header.insert(1, "Target Vehicle Dispatch")
-    
     final_output_rows = [header]
     
-    # 4. Flatten the groups back into row format
     for group_id, group_meta in enumerate(groups, start=1):
         dispatch_str = group_meta["dispatch_time"].strftime("%Y-%m-%d %H:%M")
         for row in group_meta["flights"]:
@@ -295,16 +426,16 @@ def run_optimization_pipeline(processed_rows):
             row.insert(1, dispatch_str)
             final_output_rows.append(row)
             
-    # 5. Write the final optimized spreadsheet to disk
     with open(OUTPUT_CSV, mode="w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerows(final_output_rows)
-    print(f"\nSuccess! Optimized manifest saved to: {OUTPUT_CSV}")
+    print(f"Success! Consolidated manifest file updated: {OUTPUT_CSV}")
 
+# ----------------------------------------------------------------
+# SYSTEM ENTRY LEVEL CONTROLLER
+# ----------------------------------------------------------------
 if __name__ == "__main__":
-    # Execution Block
-    # Step 1: Extract and Fetch (Hits the PDF and API once)
     extracted_data = run_extraction_pipeline()
-    
-    # Step 2: Optimize and Sort (Pure local Python math)
-    run_optimization_pipeline(extracted_data)
+    verify_pipeline_integrity(len(extracted_data), OUTPUT_CSV)
+    if extracted_data:
+        run_optimization_pipeline(extracted_data)
