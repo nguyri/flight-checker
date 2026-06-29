@@ -369,13 +369,25 @@ def save_pipeline_to_csv(compiled_rows, output_csv_path):
 # ----------------------------------------------------------------
 # EXECUTION STAGES
 # ----------------------------------------------------------------
-def run_extraction_pipeline():
-    print(f"Starting Stage 1: Parsing PDF data from {INPUT_PDF}...")
+def run_extraction_pipeline(pdf_path=None, target_iata=None):
+    """
+    STAGE 1: Parses PDF data and matches live flight info via api.market.
+    Accepts explicit file paths and target IATA codes dynamically.
+    """
+    # Fall back to environment variable if no parameter is explicitly passed
+    source_pdf = pdf_path if pdf_path else INPUT_PDF
+    
+    # Safely override the global target destination if provided by the web UI
+    global ARRIVAL_IATA_CODE
+    if target_iata:
+        ARRIVAL_IATA_CODE = target_iata.strip().upper()
+
+    print(f"Starting Stage 1: Parsing PDF data from {source_pdf}...")
     all_rows = []
     flt_info_idx, original_pickup_idx = None, None
     
     try:
-        with pdfplumber.open(INPUT_PDF) as pdf:
+        with pdfplumber.open(source_pdf) as pdf:
             for page_num, page in enumerate(pdf.pages):
                 table = page.extract_table()
                 if not table: continue
@@ -390,12 +402,10 @@ def run_extraction_pipeline():
                     header = inject_api_headers(header, flt_info_idx, original_pickup_idx)
                     all_rows.append(header)
                     data_rows = table[1:]
-                
                     find_manifest_date(data_rows, flt_info_idx)
                 else:
                     data_rows = table
 
-                # Streamlined processing loop
                 for row in data_rows:
                     if len(row) > flt_info_idx:
                         flight_code = extract_full_flight_code(row[flt_info_idx])
@@ -403,7 +413,6 @@ def run_extraction_pipeline():
                         row_pickup_idx = original_pickup_idx + 4 if (original_pickup_idx and original_pickup_idx > flt_info_idx) else original_pickup_idx
                         pickup_val = row[row_pickup_idx] if row_pickup_idx is not None else ""
                         
-                        # 1. Fetch data (could return "INVALID\nDESTINATION")
                         status, origin, arr_time = get_flight_live_data(flight_code, pickup_val)
                         
                         row.insert(flt_info_idx + 1, flight_code)
@@ -413,16 +422,12 @@ def run_extraction_pipeline():
                         
                         if row_pickup_idx is not None:
                             row_pickup_idx = original_pickup_idx + 4 if original_pickup_idx > flt_info_idx else original_pickup_idx
-                            
-                            # 2. CRASH PROTECTION: Guard math calculation against invalid string tokens
                             if "INVALID" in str(arr_time) or status == "Mismatch":
                                 wait_time_val = "N/A"
                             else:
                                 wait_time_val = calculate_wait_time(arr_time, row[row_pickup_idx])
                                 
                             row.insert(row_pickup_idx + 1, wait_time_val)
-                    
-                    # This now appends safely even if the API returned an error string!
                     all_rows.append(row)
                     
         return all_rows
@@ -430,7 +435,51 @@ def run_extraction_pipeline():
         logger.error(f"Pipeline failure: {e}")
         return []
 
-def run_optimization_pipeline(processed_rows):
+
+def run_optimization_pipeline(processed_rows, max_wait_hours=2):
+    """
+    STAGE 2: Evaluates windowing constraints and exports grouped manifest.
+    Accepts variable max_wait_hours thresholds dynamically from the web frontend.
+    """
+    if not processed_rows or len(processed_rows) <= 1:
+        print("No active datasets passed down to run optimization groupings.")
+        return []
+        
+    print("\nStarting Stage 2: Grouping passenger schedules...")
+    
+    # Deep copy the array structure to prevent mutational drift back in Stage 1 records
+    import copy
+    header = copy.deepcopy(processed_rows[0])
+    data_rows = copy.deepcopy(processed_rows[1:])
+    
+    try:
+        # Search the header to find where the arrival time cell lives dynamically
+        arrival_idx = next(i for i, h in enumerate(header) if h and "ARRIVAL" in str(h).upper())
+    except StopIteration:
+        print("Structural Mapping Error: Missing active 'Arrival' field definitions.")
+        return []
+
+    # Run the window tracking algorithm
+    groups = build_pickup_groups(data_rows, arrival_idx, max_wait_hours=max_wait_hours)
+    
+    header.insert(0, "Pickup Group ID")
+    header.insert(1, "Target Vehicle Dispatch")
+    final_output_rows = [header]
+    
+    for group_id, group_meta in enumerate(groups, start=1):
+        if group_meta.get("is_valid", True):
+            group_name = f"Group #{group_id}"
+            dispatch_str = group_meta["dispatch_time"].strftime("%Y-%m-%d %H:%M")
+        else:
+            group_name = "MANUAL REVIEW"
+            dispatch_str = "N/A - Review Flight"
+
+        for row in group_meta["flights"]:
+            row.insert(0, group_name)
+            row.insert(1, dispatch_str)
+            final_output_rows.append(row)
+            
+    return final_output_rows
     """STAGE 2: Evaluates windowing constraints and exports grouped manifest."""
     if not processed_rows or len(processed_rows) <= 1:
         print("No active datasets passed down to run optimization groupings.")
@@ -474,9 +523,14 @@ def run_optimization_pipeline(processed_rows):
 if __name__ == "__main__":
     extracted_data = run_extraction_pipeline()
     
-    save_pipeline_to_csv(extracted_data, PARSE_CSV)
-    verify_pipeline_integrity(len(extracted_data), PARSE_CSV)
     if extracted_data:
+        save_pipeline_to_csv(extracted_data, PARSE_CSV)
+        
+        total_source_records = len(extracted_data) 
+        verify_pipeline_integrity(total_source_records, PARSE_CSV)
+
         optimized_data = run_optimization_pipeline(extracted_data)
-    save_pipeline_to_csv(optimized_data, OUTPUT_CSV)
-    verify_pipeline_integrity(len(extracted_data), OUTPUT_CSV)
+        
+        if optimized_data:
+            save_pipeline_to_csv(optimized_data, OUTPUT_CSV)
+            verify_pipeline_integrity(total_source_records, OUTPUT_CSV)
