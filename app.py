@@ -25,7 +25,7 @@ logging.getLogger("pdfplumber").setLevel(logging.WARNING)
 # Set page layout to wide for large dispatcher tables
 st.set_page_config(page_title="Flight Shuttle Dispatcher", layout="wide")
 
-st.title("✈️ Flight Manifest Grouping & Optimization System")
+st.title("✈️ Flight Checker")
 st.write("Upload your passenger flight manifest PDF to extract live flight statuses, filter by destination, and optimize vehicle dispatch windows.")
 
 # --- SIDEBAR CONFIGURATION LAYER ---
@@ -40,7 +40,7 @@ if uploaded_file is not None:
     st.success("PDF Uploaded Successfully!")
     
     # Simple trigger button so you don't waste API quota on every page click
-    if st.button("🚀 Process Pipeline & Optimize Groups"):
+    if st.button("🚀 Check Flights & Shuttles"):
         
         with st.spinner("Processing Stage 1 & 2: Parsing PDF, hitting api.market gateway, and calculating optimization windows..."):
             
@@ -77,7 +77,7 @@ if uploaded_file is not None:
             df = df.reset_index(drop=True)
 
             # --- STAGE 2: LIVE OPERATIONAL REVIEW SHEET ---
-            st.subheader("📊 Optimized Dispatch Schedule View")
+            st.subheader("Schedule View")
             st.write(f"Total Rows Accounted For: **{len(df)}**")
 
             # Highlight Rows needing manual review due to API mismatch or bad times

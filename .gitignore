@@ -3,3 +3,4 @@
 *.pdf
 flight_cache.json
 __pycache__/
+*.tar

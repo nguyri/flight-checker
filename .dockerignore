@@ -1,0 +1,9 @@
+.git
+__pycache__
+.venv
+venv
+.env
+.streamlit/config.toml
+*.csv
+*.pdf
+flight_cache.json
