@@ -223,8 +223,11 @@ def get_flight_live_data(flight_number, pdf_pickup_time_str):
         flight_cache = load_cache(CACHE_FILE)
         cache_key = generate_shuttle_cache_key(flight_number, pdf_pickup_time_str, MANIFEST_DATE)
         if cache_key in flight_cache:
+            logger.info(f"[CACHE HIT] Found stored data for {flight_number} ({cache_key}). Skipping API call.")
             cached = flight_cache[cache_key]
             return cached["status"], cached["origin"], cached["sched_arr"]
+        else:
+            logger.info(f"[CACHE MISS] No cached data for {flight_number} ({cache_key}). Querying api.market...")
 
     try:
         api_data = fetch_live_flight_payload(flight_number)
