@@ -3,11 +3,13 @@ import json
 import re
 import requests
 from dotenv import load_dotenv
+import pytest
 
 # Load environment variables from your .env file
 load_dotenv()
 APIMARKET_KEY = os.environ.get("APIMARKET_KEY")
 
+@pytest.mark.skip(reason="Temporarily disabling due to API rate limit")
 def normalize_date_for_api(raw_date_str):
     """Ensures raw date strings are formatted to standard YYYY-MM-DD."""
     if not raw_date_str:

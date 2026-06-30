@@ -1,28 +1,31 @@
 # Use a slim Python image to keep the container footprint small
 FROM python:3.12-slim
 
-# Set working directory inside the container
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-COPY . .  
-# This now copies everything from the /app folder
-
-# Install system dependencies (needed for some Python libraries)
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
     git \
     && rm -rf /var/lib/apt/lists/*
 
+# Set working directory inside the container
+WORKDIR /app
+
+# Create a system user FIRST
+RUN useradd -m appuser
+
 # Copy requirements first to leverage Docker's caching mechanism
 COPY requirements.txt .
-
-# Install dependencies
 RUN pip3 install --no-cache-dir -r requirements.txt
 
 # Copy the rest of your application code
 COPY . .
+
+# CRITICAL FIX: Change ownership of the files to appuser so it can read app.py
+RUN chown -R appuser:appuser /app
+
+# Switch to the non-root user
+USER appuser
 
 # Expose Streamlit's default port
 EXPOSE 8501
@@ -30,8 +33,4 @@ EXPOSE 8501
 # Configure Streamlit to handle running smoothly inside a container
 HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health
 
-# Create a system user and switch to it
-RUN useradd -m appuser
-USER appuser
-
-ENTRYPOINT ["streamlit", "run", "py", "--server.port=8501", "--server.address=0.0.0.0"]
+ENTRYPOINT ["streamlit", "run", "main.py", "--server.port=8501", "--server.address=0.0.0.0"]

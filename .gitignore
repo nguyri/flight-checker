@@ -5,3 +5,4 @@ flight_cache.json
 __pycache__/
 *.tar
 .DS_Store
+infra/auth/.htpasswd

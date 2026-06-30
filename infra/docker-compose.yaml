@@ -1,21 +1,21 @@
 services:
-  # Your Application Container
   app:
-    build: ../app
+    build: 
+      context: ../app
+      dockerfile: dockerfile
     container_name: flight-checker-app
     restart: always
     volumes:
-      # Mount the sibling 'data' folder on the host to the root '/data' folder inside the container
       - ../data:/data
+    env_file:
+      - ../.env
     environment:
+      - PYTHONPATH=/
       - INPUT_CSV=/data/source.csv
       - OUTPUT_CSV=/data/flights_output.csv
       - PARSE_CSV=/data/parse_output.csv
       - VERBOSE_LOGGING=True
-    expose:
-      - "8501"
 
-  # Your Nginx Gateway (Authentication Guard)
   nginx:
     image: nginx:alpine
     container_name: nginx_proxy
