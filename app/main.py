@@ -1,9 +1,9 @@
 import streamlit as st
 import pandas as pd
 import io
-from app.flight_checker import run_extraction_pipeline
-from app.flight_checker import run_optimization_pipeline
-from app.pdf_output import save_pipeline_to_pdf
+from flight_checker import run_extraction_pipeline
+from flight_checker import run_optimization_pipeline
+from pdf_output import save_pipeline_to_pdf
 
 import logging
 import sys
