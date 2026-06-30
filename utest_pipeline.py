@@ -1,9 +1,10 @@
 import pytest
 from unittest.mock import patch
+import unittest
 
 # Import the logic directly from your development files
 from cache import generate_shuttle_cache_key
-from flight_checker import pick_best_shuttle_leg, get_flight_live_data
+from flight_checker import pick_best_shuttle_leg, get_flight_live_data, extract_full_flight_code
 
 # ----------------------------------------------------------------
 # UNIT TESTS: CACHE LAYER
@@ -119,3 +120,35 @@ def test_csv_output_length_matches_source(tmp_path):
         csv_row_count = sum(1 for row in f) - 1
         
     assert source_count == csv_row_count, f"Row mismatch! Source: {source_count}, Output: {csv_row_count}"
+
+class TestFlightCodeExtraction(unittest.TestCase):
+
+    def test_valid_full_input(self):
+        """Test the full, non-truncated string."""
+        text = "接机:是; 日期:2026-06-29; 时间:11:05:00; 航班:PD269; 机场:YYC"
+        self.assertEqual(extract_full_flight_code(text), "PD269")
+
+    def test_flight_number_with_keyword(self):
+        """Test variation with 航班号 keyword."""
+        text = "航班号: AC123; 机场: YYZ"
+        self.assertEqual(extract_full_flight_code(text), "AC123")
+
+    def test_truncated_input(self):
+        """Verify behavior when input is truncated (expecting None)."""
+        text = "接机:是; 日期:20"
+        self.assertIsNone(extract_full_flight_code(text))
+
+    def test_empty_input(self):
+        """Test empty or null input."""
+        self.assertIsNone(extract_full_flight_code(""))
+        self.assertIsNone(extract_full_flight_code(None))
+
+    def test_standard_pattern_fallback(self):
+        """Test extracting a code without a Chinese keyword."""
+        text = "Flight: UA764"
+        # If your function falls back to searching for patterns like 'UA764'
+        # ensure your regex matches that expected behavior.
+        self.assertEqual(extract_full_flight_code("UA764"), "UA764")
+
+if __name__ == '__main__':
+    unittest.main()

@@ -61,16 +61,31 @@ def normalize_date_for_api(raw_date_str):
     return cleaned
 
 def extract_full_flight_code(cell_text):
-    """Parses raw text cells to isolate standard flight numbers."""
-    if not cell_text:
-        return ""
-    match_chinese = re.search(r'航班号:\s*([A-Za-z0-9]+)', str(cell_text))
-    if match_chinese:
-        return match_chinese.group(1).upper()
-    match_standard = re.search(r'([A-Za-z]{2,3}\d+)', str(cell_text))
-    if match_standard:
-        return match_standard.group(1).upper()
-    return ""
+    """
+    Parses raw text to extract flight codes, handling both '航班:' and '航班号:'.
+    Returns the flight code in uppercase, or None if not found.
+    """
+    if not cell_text or not isinstance(cell_text, str):
+        return None
+    print(cell_text)
+
+    # Regex breakdown:
+    # 1. (?:航班号|航班) - Non-capturing group for the keywords
+    # 2. :\s* - Matches the colon and optional following spaces
+    # 3. ([A-Za-z0-9]+) - Capture group for the alphanumeric flight code
+    pattern = r'(?:航班号|航班):\s*([A-Za-z0-9]+)'
+    
+    match = re.search(pattern, cell_text)
+    
+    if match:
+        return match.group(1).upper()
+    
+    # Optional: Log a warning only if you expected a code but didn't find one
+    # You can customize this condition based on your data quality needs
+    if "航班" in cell_text:
+        logging.warning(f"Keyword '航班' found, but no valid code extracted from: '{cell_text}'")
+    
+    return None
 
 def format_timezone_offset(time_str):
     """Maps ISO timezone offsets (+00:00, -06:00) to clear text acronyms."""
@@ -392,7 +407,12 @@ def run_extraction_pipeline(pdf_path=None, target_iata=None):
     try:
         with pdfplumber.open(source_pdf) as pdf:
             for page_num, page in enumerate(pdf.pages):
-                table = page.extract_table()
+                table = page.extract_table(table_settings={
+                    "horizontal_strategy": "text",
+                    "vertical_strategy": "text",
+                    "keep_blank_chars": True,
+                    "snap_tolerance": 10 
+                })
                 if not table: continue
                 
                 if page_num == 0:
