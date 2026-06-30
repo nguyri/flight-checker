@@ -10,7 +10,7 @@ services:
       # Mount the sibling 'data' folder on the host to the root '/data' folder inside the container
       - ../data:/data
     env_file:
-      - ../app/.env
+      - ../.env
     environment:
       - INPUT_CSV=/data/source.csv
       - OUTPUT_CSV=/data/flights_output.csv
