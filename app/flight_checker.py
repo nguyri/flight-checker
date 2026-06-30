@@ -34,7 +34,7 @@ MANIFEST_DATE = os.environ.get("MANIFEST_DATE")
 USE_CACHE = True
 
 if not APIMARKET_KEY:
-    raise ValueError("CRITICAL ERROR: RAPIDAPI_KEY is missing from environment variables!")
+    raise ValueError("CRITICAL ERROR: APIMARKET_KEY is missing from environment variables!")
 
 
 # ----------------------------------------------------------------
