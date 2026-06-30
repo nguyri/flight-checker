@@ -394,6 +394,15 @@ def run_extraction_pipeline(csv_path=None, target_iata=None, manifest_date=None)
     if target_iata:
         ARRIVAL_IATA_CODE = target_iata.strip().upper()
 
+    # date priority 1. cli parameter, 2. env parameter, 3. read first row
+    global MANIFEST_DATE
+    if manifest_date:
+        MANIFEST_DATE = normalize_date_for_api(manifest_date)
+        logger.info(f"[DATE] Manifest date set by caller: {MANIFEST_DATE}")
+    elif not MANIFEST_DATE:
+        # Will be discovered later by find_manifest_date()
+        logger.info("[DATE] No manifest date provided — will scan CSV rows.")
+
     print(f"Starting Stage 1: Parsing CSV data from {source_csv}...")
 
     raw_rows = read_input_csv(source_csv)
@@ -409,14 +418,6 @@ def run_extraction_pipeline(csv_path=None, target_iata=None, manifest_date=None)
     if flt_info_idx is None:
         print("Error: Could not find 'FLT Info' column.")
         return []
-
-    # date priority 1. cli parameter, 2. env parameter, 3. read first row
-    if manifest_date:
-        MANIFEST_DATE = normalize_date_for_api(manifest_date)
-        logger.info(f"[DATE] Manifest date set by caller: {MANIFEST_DATE}")
-    elif not MANIFEST_DATE:
-        # Will be discovered later by find_manifest_date()
-        logger.info("[DATE] No manifest date provided — will scan CSV rows.")
 
 
     header = inject_api_headers(header, flt_info_idx, original_pickup_idx)
@@ -504,17 +505,27 @@ def run_optimization_pipeline(processed_rows, max_wait_hours=2):
 # ----------------------------------------------------------------
 # SYSTEM ENTRY LEVEL CONTROLLER
 # ----------------------------------------------------------------
+import argparse
+
 if __name__ == "__main__":
-    extracted_data = run_extraction_pipeline()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--manifest_date", type=str, help="Override manifest date (YYYY-MM-DD)")
+    parser.add_argument("--csv", type=str, help="Override input CSV path")
+    parser.add_argument("--iata", type=str, help="Override arrival IATA code")
+    args = parser.parse_args()
+
+    extracted_data = run_extraction_pipeline(
+        csv_path=args.csv,
+        target_iata=args.iata,
+        manifest_date=args.manifest_date
+    )
 
     if extracted_data:
         save_pipeline_to_csv(extracted_data, PARSE_CSV)
-
         total_source_records = len(extracted_data)
         verify_pipeline_integrity(total_source_records, PARSE_CSV)
 
         optimized_data = run_optimization_pipeline(extracted_data)
-
         if optimized_data:
             save_pipeline_to_csv(optimized_data, OUTPUT_CSV)
             verify_pipeline_integrity(total_source_records, OUTPUT_CSV)
