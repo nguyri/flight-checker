@@ -1,18 +1,14 @@
 #!/bin/bash
+# /home/richard/code/python-general/flight-checker/deploy.sh
 
-# Navigate to the project directory
-cd /home/richard/code/flight-checker
+cd /home/richard/code/python-general/flight-checker
 
-# Fetch latest code from your repository
-echo "Checking for code updates..."
-GIT_OUTPUT=$(git pull origin main)
+echo "Webhook triggered: Pulling changes from main..."
+git fetch --all
+git reset --hard origin/main
 
-# If Git pulled new changes, trigger Docker Compose to rebuild automatically
-if [ "$GIT_OUTPUT" != "Already up to date." ]; then
-    echo "New code detected! Automating Docker rebuild..."
-    cd infra
-    docker compose up -d --build
-    echo "Deployment complete."
-else
-    echo "No code changes found. Keeping current image."
-fi
+echo "Automating Docker rebuild..."
+cd infra
+docker compose up -d --build --remove-orphans
+
+echo "Deployment complete at $(date)"
