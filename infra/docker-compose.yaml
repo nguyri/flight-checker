@@ -3,6 +3,7 @@ services:
   app:
     build: ../app
     container_name: flight-checker-app
+    dockerfile: dockerfile
     restart: always
     volumes:
       # Mount the sibling 'data' folder on the host to the root '/data' folder inside the container
