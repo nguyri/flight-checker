@@ -8,7 +8,10 @@ services:
       # Mount the sibling 'data' folder on the host to the root '/data' folder inside the container
       - ../data:/data
     environment:
-      - INPUT_CSV_PATH=/data/source.csv
+      - INPUT_CSV=/data/source.csv
+      - OUTPUT_CSV=/data/flights_output.csv
+      - PARSE_CSV=/data/parse_output.csv
+      - VERBOSE_LOGGING=True
     expose:
       - "8501"
 

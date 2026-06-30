@@ -25,9 +25,9 @@ VERBOSE_LOGGING = os.environ.get("VERBOSE_LOGGING", "True").lower() in ("true", 
 logger.setLevel(logging.DEBUG if VERBOSE_LOGGING else logging.INFO)
 
 APIMARKET_KEY = os.environ.get("APIMARKET_KEY")
-INPUT_CSV = os.environ.get("INPUT_CSV", "/app/data/flights-3.csv")
-OUTPUT_CSV = os.environ.get("OUTPUT_CSV", "/app/data/flights_output.csv")
-PARSE_CSV = os.environ.get("PARSE_CSV", "/app/data/parse_output.csv")
+INPUT_CSV = os.environ.get("INPUT_CSV", "../data/flights-3.csv")
+OUTPUT_CSV = os.environ.get("OUTPUT_CSV", "../data/flights_output.csv")
+PARSE_CSV = os.environ.get("PARSE_CSV", "../data/parse_output.csv")
 CACHE_FILE = "flight_cache.json"
 ARRIVAL_IATA_CODE = os.environ.get("ARRIVAL_IATA_CODE", "YYC")
 MANIFEST_DATE = os.environ.get("MANIFEST_DATE")

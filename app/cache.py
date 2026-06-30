@@ -28,7 +28,16 @@ def save_cache(cache_data, cache_file):
         logger.warning(f"Could not write to cache file: {e}")
 
 def generate_shuttle_cache_key(flight_number, pickup_time_str, manifest_date):
-    """Creates a unique compound key for short-haul commuter routes, explicitly scoped by date."""
+    """Creates a unique compound key for short-haul commuter routes, strictly scoped by date."""
+    
+    # Enforce that manifest_date MUST exist and cannot be falsy/None
+    if not manifest_date or str(manifest_date).strip() == "":
+        raise ValueError(
+            f"CRITICAL: Missing manifest date for flight {flight_number}. "
+            f"Cannot safely generate cache key or query API without a timestamp."
+        )
+        
     clean_pickup = re.sub(r'[\s\:\-]', '', str(pickup_time_str))
-    clean_date = re.sub(r'[\s\:\-]', '', str(manifest_date or "anyday"))
+    clean_date = re.sub(r'[\s\:\-]', '', str(manifest_date))
+    
     return f"{flight_number}_{clean_date}_{clean_pickup}"
