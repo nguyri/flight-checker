@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 # Import our custom Stage 2 optimization algorithm
 from optimize_pickups import build_pickup_groups
 from cache import load_cache, save_cache, generate_shuttle_cache_key
+from pdf_output import save_pipeline_to_pdf
 
 # ----------------------------------------------------------------
 # INITIALIZATION & LOGGING SETUP
@@ -507,11 +508,14 @@ def run_optimization_pipeline(processed_rows, max_wait_hours=2):
 # ----------------------------------------------------------------
 import argparse
 
+import argparse
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest_date", type=str, help="Override manifest date (YYYY-MM-DD)")
     parser.add_argument("--csv", type=str, help="Override input CSV path")
     parser.add_argument("--iata", type=str, help="Override arrival IATA code")
+    parser.add_argument("--pdf", action="store_true", help="Also export results as a PDF report")
     args = parser.parse_args()
 
     extracted_data = run_extraction_pipeline(
@@ -529,3 +533,6 @@ if __name__ == "__main__":
         if optimized_data:
             save_pipeline_to_csv(optimized_data, OUTPUT_CSV)
             verify_pipeline_integrity(total_source_records, OUTPUT_CSV)
+
+            if args.pdf:
+                save_pipeline_to_pdf(optimized_data, OUTPUT_CSV.replace(".csv", ".pdf"), MANIFEST_DATE)
