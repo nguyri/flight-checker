@@ -1,23 +1,24 @@
 services:
-  # Your Application
+  # Your Application Container
   app:
-    # Instead of 'image:', use 'build:' to point to your local code
-    build: ../flight-checker  # Path to the folder containing your Dockerfile
+    build: ../app
     container_name: flight-checker-app
     restart: always
     volumes:
-      - /home/richard/data:/app/data
+      # Mount the sibling 'data' folder on the host to the root '/data' folder inside the container
+      - ../data:/data
+    environment:
+      - INPUT_CSV_PATH=/data/source.csv
     expose:
       - "8501"
 
-  # Your Nginx Gateway
+  # Your Nginx Gateway (Authentication Guard)
   nginx:
     image: nginx:alpine
     container_name: nginx_proxy
     restart: always
     ports:
       - "80:80"
-      - "443:443"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./auth:/etc/nginx/auth:ro

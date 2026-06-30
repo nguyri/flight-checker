@@ -9,9 +9,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Import our custom Stage 2 optimization algorithm
-from app.optimize_pickups import build_pickup_groups
-from app.cache import load_cache, save_cache, generate_shuttle_cache_key
-from app.pdf_output import save_pipeline_to_pdf
+from optimize_pickups import build_pickup_groups
+from cache import load_cache, save_cache, generate_shuttle_cache_key
+from pdf_output import save_pipeline_to_pdf
 
 # ----------------------------------------------------------------
 # INITIALIZATION & LOGGING SETUP
@@ -24,16 +24,16 @@ logger = logging.getLogger(__name__)
 VERBOSE_LOGGING = os.environ.get("VERBOSE_LOGGING", "True").lower() in ("true", "1", "yes")
 logger.setLevel(logging.DEBUG if VERBOSE_LOGGING else logging.INFO)
 
-RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY")
-INPUT_CSV = os.environ.get("INPUT_CSV", "flights-3.csv")
-OUTPUT_CSV = os.environ.get("OUTPUT_CSV", "flights_output.csv")
-PARSE_CSV = os.environ.get("PARSE_CSV", "parse_output.csv")
+APIMARKET_KEY = os.environ.get("APIMARKET_KEY")
+INPUT_CSV = os.environ.get("INPUT_CSV", "/app/data/flights-3.csv")
+OUTPUT_CSV = os.environ.get("OUTPUT_CSV", "/app/data/flights_output.csv")
+PARSE_CSV = os.environ.get("PARSE_CSV", "/app/data/parse_output.csv")
 CACHE_FILE = "flight_cache.json"
 ARRIVAL_IATA_CODE = os.environ.get("ARRIVAL_IATA_CODE", "YYC")
 MANIFEST_DATE = os.environ.get("MANIFEST_DATE")
 USE_CACHE = True
 
-if not RAPIDAPI_KEY:
+if not APIMARKET_KEY:
     raise ValueError("CRITICAL ERROR: RAPIDAPI_KEY is missing from environment variables!")
 
 
@@ -199,7 +199,7 @@ def fetch_live_flight_payload(flight_number):
     url = f"https://prod.api.market/api/v1/aedbx/aerodatabox/flights/number/{flight_number}/{MANIFEST_DATE}"
 
     headers = {
-        "x-api-market-key": RAPIDAPI_KEY
+        "x-api-market-key": APIMARKET_KEY
     }
 
     response = requests.get(url, headers=headers)
@@ -389,7 +389,11 @@ def run_extraction_pipeline(csv_path=None, target_iata=None, manifest_date=None)
     STAGE 1: Reads CSV data and enriches it with live flight info via api.market.
     Accepts explicit file paths and target IATA codes dynamically.
     """
-    source_csv = csv_path if csv_path else INPUT_CSV
+    source_csv_in = csv_path if csv_path else INPUT_CSV
+    source_csv = Path(source_csv_in)
+
+    if not source_csv.exists():
+        raise FileNotFoundError(f"Input file not found: {source_csv.absolute()}")
 
     global ARRIVAL_IATA_CODE
     if target_iata:

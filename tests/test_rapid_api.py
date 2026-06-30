@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 # Load environment variables from your .env file
 load_dotenv()
-RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY")
+APIMARKET_KEY = os.environ.get("APIMARKET_KEY")
 
 def normalize_date_for_api(raw_date_str):
     """Ensures raw date strings are formatted to standard YYYY-MM-DD."""
@@ -20,8 +20,8 @@ def normalize_date_for_api(raw_date_str):
     return cleaned
 
 def debug_date_flight_api(flight_number, raw_date):
-    if not RAPIDAPI_KEY:
-        print("CRITICAL ERROR: RAPIDAPI_KEY not found in your environment or .env file.")
+    if not APIMARKET_KEY:
+        print("CRITICAL ERROR: APIMARKETAPI_KEY not found in your environment or .env file.")
         return
 
     target_date = normalize_date_for_api(raw_date)
@@ -34,7 +34,7 @@ def debug_date_flight_api(flight_number, raw_date):
     
     url = f"https://aerodatabox.p.rapidapi.com/flights/number/{flight_number}/{target_date}"
     headers = {
-        "X-RapidAPI-Key": RAPIDAPI_KEY,
+        "X-RapidAPI-Key": APIMARKET_KEY,
         "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com"
     }
     
