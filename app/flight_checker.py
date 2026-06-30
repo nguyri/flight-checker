@@ -9,9 +9,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Import our custom Stage 2 optimization algorithm
-from optimize_pickups import build_pickup_groups
-from cache import load_cache, save_cache, generate_shuttle_cache_key
-from pdf_output import save_pipeline_to_pdf
+from app.optimize_pickups import build_pickup_groups
+from app.cache import load_cache, save_cache, generate_shuttle_cache_key
+from app.pdf_output import save_pipeline_to_pdf
 
 # ----------------------------------------------------------------
 # INITIALIZATION & LOGGING SETUP
@@ -57,25 +57,32 @@ def normalize_date_for_api(raw_date_str):
 
     return cleaned
 
+import re
+import logging
+
 def extract_full_flight_code(cell_text):
     """
-    Parses raw text to extract flight codes, handling both '航班:' and '航班号:'.
+    Parses raw text to extract flight codes. Handles '航班:', '航班号:', 
+    or standalone valid aviation flight codes (e.g., 'UA764'), ignoring random text/numbers.
     Returns the flight code in uppercase, or None if not found.
     """
     if not cell_text or not isinstance(cell_text, str):
         return None
-    print(cell_text)
+
+    cell_text = cell_text.strip()
 
     # Regex breakdown:
-    # 1. (?:航班号|航班) - Non-capturing group for the keywords
-    # 2. :\s* - Matches the colon and optional following spaces
-    # 3. ([A-Za-z0-9]+) - Capture group for the alphanumeric flight code
-    pattern = r'(?:航班号|航班):\s*([A-Za-z0-9]+)'
+    # 1. (?:(?:航班号|航班):\s*)([A-Za-z0-9]+) -> If the prefix is present, capture any alphanumerics following it.
+    # 2. | -> OR
+    # 3. \b([A-Za-z]{2,3}\d{1,4})\b -> Standalone fallback: Must be 2-3 letters followed by 1-4 numbers (e.g., UA764, AC20).
+    pattern = r'(?:(?:航班号|航班):\s*)([A-Za-z0-9]+)|\b([A-Za-z]{2,3}\d{1,4})\b'
 
     match = re.search(pattern, cell_text)
 
     if match:
-        return match.group(1).upper()
+        # Return whichever group captured the data (group 1 for prefix path, group 2 for standalone path)
+        code = match.group(1) or match.group(2)
+        return code.upper()
 
     if "航班" in cell_text:
         logging.warning(f"Keyword '航班' found, but no valid code extracted from: '{cell_text}'")

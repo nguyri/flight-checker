@@ -28,10 +28,13 @@ st.write("Upload your passenger flight manifest CSV to extract live flight statu
 # --- SIDEBAR CONFIGURATION LAYER ---
 st.sidebar.header("Pipeline Configurations")
 arrival_iata = st.sidebar.text_input("Target Arrival IATA Code", value="YYC").upper()
+
+# ADDED: Date selector in the sidebar (defaults to today's date)
+target_date = st.sidebar.date_input("Target Operational Date")
+
 max_wait = st.sidebar.slider("Maximum Passenger Wait Window (Hours)", 1.0, 4.0, 2.0, step=0.5)
 
 # --- STAGE 1: FILE UPLOAD HANDLER ---
-# Changed type from ["pdf"] to ["csv"]
 uploaded_file = st.file_uploader("Choose a Manifest CSV file", type=["csv"])
 
 if uploaded_file is not None:
@@ -46,9 +49,16 @@ if uploaded_file is not None:
             with open("temp_manifest.csv", "wb") as f:
                 f.write(uploaded_file.getbuffer())
                 
+            # Convert the date object to standard YYYY-MM-DD string format
+            date_str = target_date.strftime("%Y-%m-%d")
+                
             # Run your exact backend code
-            # Note: Changed parameter name from pdf_path to csv_path to reflect the format change
-            processed_rows = run_extraction_pipeline(csv_path="temp_manifest.csv", target_iata=arrival_iata)
+            # UPDATED: Passing the target_date string into the extraction pipeline
+            processed_rows = run_extraction_pipeline(
+                csv_path="temp_manifest.csv", 
+                target_iata=arrival_iata,
+                manifest_date=date_str
+            )
             final_optimized_rows = run_optimization_pipeline(processed_rows, max_wait_hours=max_wait)
             
         if final_optimized_rows:
@@ -83,15 +93,52 @@ if uploaded_file is not None:
             st.dataframe(df.style.apply(highlight_issues, axis=1), width="stretch")
             
             # --- STAGE 3: DOWNLOAD HANDLER ---
-            csv_buffer = io.StringIO()
-            df.to_csv(csv_buffer, index=False)
-            csv_bytes = csv_buffer.getvalue().encode('utf-8')
-            
-            st.download_button(
-                label="📥 Download Grouped Manifest CSV",
-                data=csv_bytes,
-                file_name="optimized_shuttle_manifest.csv",
-                mime="text/csv",
-            )
+            st.subheader("Export Schedule")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                # 1. CSV Export
+                csv_buffer = io.StringIO()
+                df.to_csv(csv_buffer, index=False)
+                csv_bytes = csv_buffer.getvalue().encode('utf-8')
+                
+                st.download_button(
+                    label="📥 Download Manifest CSV",
+                    data=csv_bytes,
+                    file_name=f"shuttle_manifest_{date_str}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+                
+            with col2:
+                # 2. PDF Export using your existing module
+                with st.spinner("Compiling PDF document..."):
+                    # Create an in-memory byte buffer
+                    pdf_buffer = io.BytesIO()
+                    
+                    # Re-compile your DataFrame back into rows format [[header], [row1], [row2]]
+                    compiled_rows = [df.columns.tolist()] + df.values.tolist()
+                    
+                    # Execute your existing function directly into the buffer
+                    success = save_pipeline_to_pdf(
+                        compiled_rows=compiled_rows, 
+                        output_pdf_path=pdf_buffer, # Passing the buffer stream
+                        MANIFEST_DATE=date_str
+                    )
+                    
+                    if success:
+                        # Grab the raw bytes out of the completed buffer
+                        pdf_bytes = pdf_buffer.getvalue()
+                        
+                        st.download_button(
+                            label="📄 Download Printable PDF Report",
+                            data=pdf_bytes,
+                            file_name=f"shuttle_manifest_{date_str}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True
+                        )
+                    else:
+                        st.error("Could not compile PDF report. Check backend logs.")
         else:
             st.error("Pipeline failure. Check your console logs or verify the format structure of your CSV.")

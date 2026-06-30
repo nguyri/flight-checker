@@ -3,20 +3,28 @@ from unittest.mock import patch
 import unittest
 
 # Import the logic directly from your development files
-from cache import generate_shuttle_cache_key
-from flight_checker import pick_best_shuttle_leg, get_flight_live_data, extract_full_flight_code
+from app.cache import generate_shuttle_cache_key
+from app.flight_checker import pick_best_shuttle_leg, get_flight_live_data, extract_full_flight_code
+import app.flight_checker as fc
 
 # ----------------------------------------------------------------
 # UNIT TESTS: CACHE LAYER
 # ----------------------------------------------------------------
+import pytest
+from app.cache import generate_shuttle_cache_key
+
 def test_generate_shuttle_cache_key():
     """Verifies that strings are normalized and dates isolate cache keys."""
+    # 1. Test standard valid case
     key = generate_shuttle_cache_key("UA2830", "12:30", "2026-06-29")
     assert key == "UA2830_20260629_1230"
 
-    # Test safety fallback if date is missing
-    fallback_key = generate_shuttle_cache_key("F8800", "08:00", None)
-    assert "anyday" in fallback_key
+    # 2. Test that a missing date correctly raises a ValueError as enforced by the code
+    with pytest.raises(ValueError) as exc_info:
+        generate_shuttle_cache_key("F8800", "08:00", None)
+        
+    # Optional: Verify that your exact error message or keyword is inside the exception
+    assert "CRITICAL: Missing manifest date" in str(exc_info.value)
 
 
 # ----------------------------------------------------------------
@@ -43,12 +51,10 @@ def test_pick_best_shuttle_leg_selection():
 # ----------------------------------------------------------------
 # INTEGRATION/UNIT TESTS: DESTINATION FILTER & API PACKAGING
 # ----------------------------------------------------------------
-@patch("flight_checker.fetch_live_flight_payload")
-@patch("flight_checker.USE_CACHE", new=False) # Use new=False here
+@patch("app.flight_checker.fetch_live_flight_payload")
+@patch.object(fc, "USE_CACHE", False)  # Targets the 'fc' module directly
 def test_get_flight_live_data_destination_filtering(mock_fetch):
-    """Ensures intermediate layovers are ignored and cross-referenced by city."""
-    
-    # Mock a response containing a layover (SFO) and a final destination (YYC)
+    # Mock array configuration
     mock_fetch.return_value = [
         {
             "arrival": {"airport": {"name": "San Francisco", "iata": "SFO"}, "scheduledTime": {"local": "2026-06-29 08:04-07:00"}},
@@ -64,14 +70,13 @@ def test_get_flight_live_data_destination_filtering(mock_fetch):
     
     status, origin, sched_arr = get_flight_live_data("UA2830", "12:30")
     
-    # Assertions check that it locked into the Calgary destination data
     assert status == "Expected"
-    assert "San\nFrancisco" in origin
+    assert "San\nFrancisco" in origin  
     assert "12:30" in sched_arr
 
 
-@patch("flight_checker.fetch_live_flight_payload")
-@patch("flight_checker.USE_CACHE", False)
+@patch("app.flight_checker.fetch_live_flight_payload")
+@patch("app.flight_checker.USE_CACHE", False)
 def test_get_flight_live_data_invalid_destination(mock_fetch):
     """Ensures rows still populate with an explicit error token if the city doesn't match."""
     

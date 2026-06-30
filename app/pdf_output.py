@@ -33,11 +33,16 @@ def save_pipeline_to_pdf(compiled_rows, output_pdf_path, MANIFEST_DATE):
     logger.info(f"Starting PDF export: {len(compiled_rows) - 1} records to {output_pdf_path}...")
 
     try:
-        pdf_file = Path(output_pdf_path)
-        pdf_file.parent.mkdir(parents=True, exist_ok=True)
-
+        # If it's a string or Path, make directories. Otherwise, treat as stream.
+        if isinstance(output_pdf_path, (str, Path)):
+            pdf_file = Path(output_pdf_path)
+            pdf_file.parent.mkdir(parents=True, exist_ok=True)
+            target = str(pdf_file)
+        else:
+            target = output_pdf_path # It's a BytesIO buffer stream from Streamlit
+            
         doc = SimpleDocTemplate(
-            str(pdf_file),
+            target, # <--- Pass the target here
             pagesize=landscape(A4),
             leftMargin=10*mm,
             rightMargin=10*mm,
@@ -78,9 +83,9 @@ def save_pipeline_to_pdf(compiled_rows, output_pdf_path, MANIFEST_DATE):
 
         table = Table(table_data, colWidths=col_widths, repeatRows=1)
         table.setStyle(TableStyle([
-            # Header row
-            ("BACKGROUND",  (0, 0), (-1, 0),  colors.HexColor("#2C3E50")),
-            ("TEXTCOLOR",   (0, 0), (-1, 0),  colors.white),
+            ("BACKGROUND",  (0, 0), (-1, 0),  colors.HexColor("#AED9E0")), # Light Blue
+            ("TEXTCOLOR",   (0, 0), (-1, 0),  colors.HexColor("#1A252F")), 
+            
             ("ALIGN",       (0, 0), (-1, 0),  "CENTER"),
             ("VALIGN",      (0, 0), (-1, -1), "TOP"),
             # Alternating row shading
