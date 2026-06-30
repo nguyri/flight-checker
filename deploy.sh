@@ -1,17 +1,14 @@
 #!/bin/bash
-cd /home/richard/code/flight-checker
+cd /home/richard/code/flight-checker || exit 1
 
-echo "Webhook triggered: Pulling changes..."
+echo "Webhook triggered: Pulling changes..." >&2
+git clean -fd
 git fetch --all
 git reset --hard origin/main
 
-echo "Automating Docker rebuild & cleaning old logs..."
+echo "Automating Docker rebuild..." >&2
 cd infra
-# The down command clears the container instances, wiping the logs completely
 docker compose down --remove-orphans
-
-# The build flag spins up a completely fresh logging layer
 docker compose up -d --build --force-recreate
 
-echo "Deployment complete at $(date)"
-
+echo "Deployment complete at $(date)" >&2
