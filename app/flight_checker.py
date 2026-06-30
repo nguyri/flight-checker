@@ -9,9 +9,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Import our custom Stage 2 optimization algorithm
-from optimize_pickups import build_pickup_groups
-from cache import load_cache, save_cache, generate_shuttle_cache_key
-from pdf_output import save_pipeline_to_pdf
+from app.optimize_pickups import build_pickup_groups
+from app.cache import load_cache, save_cache, generate_shuttle_cache_key
+from app.pdf_output import save_pipeline_to_pdf
 
 # ----------------------------------------------------------------
 # INITIALIZATION & LOGGING SETUP

@@ -3,8 +3,8 @@ from unittest.mock import patch
 import unittest
 
 # Import the logic directly from your development files
-from cache import generate_shuttle_cache_key
-from flight_checker import pick_best_shuttle_leg, get_flight_live_data, extract_full_flight_code
+from app.cache import generate_shuttle_cache_key
+from app.flight_checker import pick_best_shuttle_leg, get_flight_live_data, extract_full_flight_code
 
 # ----------------------------------------------------------------
 # UNIT TESTS: CACHE LAYER

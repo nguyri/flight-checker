@@ -2,8 +2,8 @@ import streamlit as st
 import pandas as pd
 import io
 # Import your existing backend logic
-from flight_checker import run_extraction_pipeline
-from flight_checker import run_optimization_pipeline
+from app.flight_checker import run_extraction_pipeline
+from app.flight_checker import run_optimization_pipeline
 
 import logging
 import sys
