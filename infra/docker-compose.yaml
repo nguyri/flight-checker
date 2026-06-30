@@ -14,8 +14,8 @@ services:
       - OUTPUT_CSV=/data/flights_output.csv
       - PARSE_CSV=/data/parse_output.csv
       - VERBOSE_LOGGING=True
-    expose:
-      - "8501"
+    ports:
+      - "8501:8501"
 
   # Your Nginx Gateway (Authentication Guard)
   nginx:
