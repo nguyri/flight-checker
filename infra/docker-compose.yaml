@@ -12,7 +12,7 @@ services:
     env_file:
       - ../.env
     environment:
-      - PYTHONPATH=/app
+      - PYTHONPATH=/
       - INPUT_CSV=/data/source.csv
       - OUTPUT_CSV=/data/flights_output.csv
       - PARSE_CSV=/data/parse_output.csv
