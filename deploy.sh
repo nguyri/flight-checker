@@ -1,5 +1,5 @@
 #!/bin/bash
-cd /home/richard/code/python-general/flight-checker
+cd /home/richard/code/flight-checker
 
 echo "Webhook triggered: Pulling changes..."
 git fetch --all
@@ -14,3 +14,4 @@ docker compose down --remove-orphans
 docker compose up -d --build --force-recreate
 
 echo "Deployment complete at $(date)"
+
