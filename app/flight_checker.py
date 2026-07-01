@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from app.optimize_pickups import build_pickup_groups
 from app.cache import load_cache, save_cache, generate_shuttle_cache_key
 from app.pdf_output import save_pipeline_to_pdf
+from app.optimize_pickups import run_optimization_pipeline
 
 # ----------------------------------------------------------------
 # INITIALIZATION & LOGGING SETUP
@@ -333,7 +334,7 @@ def verify_pipeline_integrity(extracted_rows_count, output_csv_path):
     try:
         with open(output_csv_path, mode="r", encoding="utf-8", newline="") as f:
             reader = csv.reader(f)
-            csv_row_count = sum(1 for row in reader)
+            csv_row_count = sum(1 for row in reader) - 1
 
         logger.info(f"[INTEGRITY CHECK] Source Records: {extracted_rows_count} | Destination CSV Rows: {csv_row_count}")
 
@@ -469,50 +470,6 @@ def run_extraction_pipeline(csv_path=None, target_iata=None, manifest_date=None)
         all_rows.append(row)
 
     return all_rows
-
-
-def run_optimization_pipeline(processed_rows, max_wait_hours=2):
-    """
-    STAGE 2: Evaluates windowing constraints and exports grouped manifest.
-    Accepts variable max_wait_hours thresholds dynamically from the web frontend.
-    """
-    if not processed_rows or len(processed_rows) <= 1:
-        print("No active datasets passed down to run optimization groupings.")
-        return []
-
-    print("\nStarting Stage 2: Grouping passenger schedules...")
-
-    import copy
-    header = copy.deepcopy(processed_rows[0])
-    data_rows = copy.deepcopy(processed_rows[1:])
-
-    try:
-        arrival_idx = next(i for i, h in enumerate(header) if h and "ARRIVAL" in str(h).upper())
-    except StopIteration:
-        print("Structural Mapping Error: Missing active 'Arrival' field definitions.")
-        return []
-
-    groups = build_pickup_groups(data_rows, arrival_idx, max_wait_hours=max_wait_hours)
-
-    header.insert(0, "Pickup Group ID")
-    header.insert(1, "Target Vehicle Dispatch")
-    final_output_rows = [header]
-
-    for group_id, group_meta in enumerate(groups, start=1):
-        if group_meta.get("is_valid", True):
-            group_name = f"Group #{group_id}"
-            dispatch_str = group_meta["dispatch_time"].strftime("%Y-%m-%d %H:%M")
-        else:
-            group_name = "MANUAL REVIEW"
-            dispatch_str = "N/A - Review Flight"
-
-        for row in group_meta["flights"]:
-            row.insert(0, group_name)
-            row.insert(1, dispatch_str)
-            final_output_rows.append(row)
-
-    return final_output_rows
-
 
 # ----------------------------------------------------------------
 # SYSTEM ENTRY LEVEL CONTROLLER
